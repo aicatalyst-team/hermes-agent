@@ -3,8 +3,7 @@
 # --------------------------------------------------------------------------
 # Adapted from the upstream debian:13.4-based Dockerfile.
 # Uses ubi9/python-312 as the base (provides Python 3.12 + dnf).
-# Node.js 22 is pre-installed via the ubi9/python-312 module stream
-# (satisfies engines requirement of >=20.0.0).
+# Node.js 22 is installed via the nodejs:22 module stream.
 # Runs as UID 1001 with GID 0 for OpenShift arbitrary-UID support.
 # --------------------------------------------------------------------------
 
@@ -30,9 +29,9 @@ ENV OPENAI_API_KEY="" \
 # Switch to root for package installation
 USER 0
 
-# Node.js 22 is already enabled in the ubi9/python-312 base image —
-# no need to enable a module stream. Just install nodejs + npm + other deps.
-RUN dnf install -y --setopt=install_weak_deps=False \
+# Enable the Node.js 22 module stream and install Node.js + npm + system deps.
+RUN dnf module enable -y nodejs:22 && \
+    dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
         gcc gcc-c++ make \
         libffi-devel python3-devel \
@@ -175,7 +174,6 @@ EXPOSE 8642
 EXPOSE 9119
 
 # Run as non-root user 1001 with group 0 for OpenShift
-RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
 RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
 USER 1001
 
