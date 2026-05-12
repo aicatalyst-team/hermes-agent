@@ -176,6 +176,7 @@ EXPOSE 9119
 
 # Run as non-root user 1001 with group 0 for OpenShift
 RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
+RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
 USER 1001
 
 ENTRYPOINT [ "/usr/local/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint-openshift.sh" ]
