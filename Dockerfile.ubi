@@ -33,6 +33,10 @@ USER 0
 # UBI9 python-312 images use dnf (full UBI, not ubi-minimal).
 # Note: ripgrep and ffmpeg are NOT available in UBI9 repos — they are
 # installed separately below from upstream binaries.
+#
+# Playwright Chromium OS dependencies are included here so we can run
+# `npx playwright install chromium --only-shell` (without --with-deps,
+# which requires apt-get and fails on UBI/RHEL).
 RUN dnf module enable -y nodejs:22 && \
     dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
@@ -41,6 +45,31 @@ RUN dnf module enable -y nodejs:22 && \
         procps-ng \
         git openssh-clients \
         findutils \
+        # Playwright Chromium runtime dependencies (RHEL/UBI equivalents)
+        nss \
+        nspr \
+        atk \
+        at-spi2-atk \
+        cups-libs \
+        libdrm \
+        libXcomposite \
+        libXdamage \
+        libXrandr \
+        libXext \
+        libXfixes \
+        libxcb \
+        libxkbcommon \
+        mesa-libgbm \
+        pango \
+        alsa-lib \
+        gtk3 \
+        dbus-glib \
+        libXcursor \
+        libXi \
+        libXtst \
+        libXScrnSaver \
+        xorg-x11-fonts-misc \
+        xorg-x11-fonts-Type1 \
         && \
     dnf clean all && \
     rm -rf /var/cache/dnf
@@ -66,8 +95,6 @@ RUN curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-st
     chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
 # Copy uv/uvx from the official uv image.
-# In recent astral-sh/uv images the binaries live at /uv and /uvx (not
-# /usr/local/bin/).
 COPY --chmod=0755 --from=uv_source /uv /uvx /usr/local/bin/
 
 # Create the working directories and data volume mount point.
@@ -89,8 +116,11 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # Force npm to install `file:` deps as symlinks (see original Dockerfile for rationale)
 ENV npm_config_install_links=false
 
+# Install npm deps and Playwright Chromium.
+# --with-deps is NOT used because it requires apt-get (Debian/Ubuntu).
+# All Chromium OS dependencies were installed via dnf above.
 RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+    npx playwright install chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
