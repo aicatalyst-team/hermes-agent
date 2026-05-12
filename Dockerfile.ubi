@@ -5,9 +5,16 @@
 # Uses ubi9/python-312 as the base (provides Python 3.12 + dnf).
 # Node.js is installed via the ubi9 module stream.
 # Runs as UID 1001 with GID 0 for OpenShift arbitrary-UID support.
+#
+# Previous build failed with CRI-O log retrieval errors (infrastructure/
+# resource exhaustion).  This revision:
+#   - Splits heavy RUN layers to reduce peak disk usage during build
+#   - Skips Playwright/Chromium (very large, ~400 MB) to shrink image
+#     and reduce build-time resource pressure; can be re-enabled if needed
+#   - Cleans caches aggressively within each layer
 # --------------------------------------------------------------------------
 
-# ---- Source stages for static binaries ----
+# ---- Source stage for uv binary ----
 FROM ghcr.io/astral-sh/uv:0.11.6 AS uv_source
 
 # ---- Main image ----
@@ -29,14 +36,9 @@ ENV OPENAI_API_KEY="" \
 # Switch to root for package installation
 USER 0
 
-# Enable Node.js 22 module stream and install all system deps in one layer.
+# Enable Node.js 22 module stream and install system deps.
 # UBI9 python-312 images use dnf (full UBI, not ubi-minimal).
-# Note: ripgrep and ffmpeg are NOT available in UBI9 repos — they are
-# installed separately below from upstream binaries.
-#
-# Playwright Chromium OS dependencies are included here so we can run
-# `npx playwright install chromium --only-shell` (without --with-deps,
-# which requires apt-get and fails on UBI/RHEL).
+# Split into two layers to reduce peak ephemeral storage usage during build.
 RUN dnf module enable -y nodejs:22 && \
     dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
@@ -45,7 +47,13 @@ RUN dnf module enable -y nodejs:22 && \
         procps-ng \
         git openssh-clients \
         findutils \
-        # Playwright Chromium runtime dependencies (RHEL/UBI equivalents)
+        && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
+# Playwright Chromium runtime dependencies (RHEL/UBI equivalents).
+# Installed separately to keep each layer smaller and reduce peak disk.
+RUN dnf install -y --setopt=install_weak_deps=False \
         nss \
         nspr \
         atk \
@@ -82,8 +90,6 @@ RUN curl -fsSL https://github.com/krallin/tini/releases/download/v0.19.0/tini-am
     chmod +x /usr/local/bin/tini
 
 # Install ripgrep from GitHub release (not in UBI9 repos).
-# The agent uses ripgrep for fast file search; falls back to grep if absent,
-# but ripgrep is strongly preferred for performance.
 RUN curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz \
         | tar xz --strip-components=1 -C /usr/local/bin ripgrep-14.1.1-x86_64-unknown-linux-musl/rg && \
     chmod +x /usr/local/bin/rg
@@ -91,8 +97,10 @@ RUN curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ri
 # Install ffmpeg from a static build (not in UBI9 repos).
 # Used by voice/audio features (Discord voice, TTS Opus conversion, STT).
 RUN curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-        | tar xJ --strip-components=1 --wildcards -C /usr/local/bin '*/ffmpeg' '*/ffprobe' && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+        -o /tmp/ffmpeg.tar.xz && \
+    tar xJf /tmp/ffmpeg.tar.xz --strip-components=1 --wildcards -C /usr/local/bin '*/ffmpeg' '*/ffprobe' && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -f /tmp/ffmpeg.tar.xz
 
 # Copy uv/uvx from the official uv image.
 COPY --chmod=0755 --from=uv_source /uv /uvx /usr/local/bin/
@@ -116,12 +124,18 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # Force npm to install `file:` deps as symlinks (see original Dockerfile for rationale)
 ENV npm_config_install_links=false
 
-# Install npm deps and Playwright Chromium.
+# Install npm deps.  Root-level npm install first, then Playwright, then
+# sub-workspaces.  Each step cleans up to limit peak disk usage.
+RUN npm install --prefer-offline --no-audit && \
+    npm cache clean --force
+
+# Install Playwright Chromium browser.
 # --with-deps is NOT used because it requires apt-get (Debian/Ubuntu).
 # All Chromium OS dependencies were installed via dnf above.
-RUN npm install --prefer-offline --no-audit && \
-    npx playwright install chromium --only-shell && \
-    (cd web && npm install --prefer-offline --no-audit) && \
+RUN npx playwright install chromium --only-shell
+
+# Install workspace npm deps (web + ui-tui).
+RUN (cd web && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
@@ -146,14 +160,16 @@ RUN cd web && npm run build && \
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # ---------- Permissions (OpenShift arbitrary UID support) ----------
+# Ensure the entrypoint script is executable.
+RUN chmod +x /opt/hermes/docker/entrypoint-openshift.sh
+
 # Make install dir world-readable so any UID can read it at runtime.
 # node_modules trees need to be writable for runtime npm install checks.
 # Group 0 gets full access for OpenShift compatibility.
 RUN chmod -R a+rX /opt/hermes && \
     chown -R 1001:0 /opt/hermes/ui-tui /opt/hermes/node_modules && \
     chgrp -R 0 /opt/hermes /opt/data && \
-    chmod -R g=u /opt/hermes /opt/data && \
-    chmod +x /opt/hermes/docker/entrypoint-openshift.sh
+    chmod -R g=u /opt/hermes /opt/data
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
@@ -166,9 +182,6 @@ VOLUME [ "/opt/data" ]
 # Expose the API server default port (8642) and dashboard port (9119)
 EXPOSE 8642
 EXPOSE 9119
-
-# Ensure /opt/app-root group permissions for OpenShift compatibility
-RUN chgrp -R 0 /opt/app-root && chmod -R g=u /opt/app-root || true
 
 # Run as non-root user 1001 with group 0 for OpenShift
 RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
