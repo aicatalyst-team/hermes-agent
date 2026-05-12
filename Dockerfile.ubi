@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------
 # Adapted from the upstream debian:13.4-based Dockerfile.
 # Uses ubi9/python-312 as the base (provides Python 3.12 + dnf).
-# Node.js is installed via the ubi9 module stream.
+# Node.js 20 is installed via the ubi9 module stream.
 # Runs as UID 1001 with GID 0 for OpenShift arbitrary-UID support.
 # --------------------------------------------------------------------------
 
@@ -29,9 +29,9 @@ ENV OPENAI_API_KEY="" \
 # Switch to root for package installation
 USER 0
 
-# Enable Node.js 22 module stream and install system deps in one layer.
-# UBI9 python-312 images use dnf (full UBI, not ubi-minimal).
-RUN dnf module enable -y nodejs:22 && \
+# Enable Node.js 20 module stream (reliably available in UBI9, meets >=20.0.0).
+# Install system deps in one layer — UBI9 python-312 images use dnf (full UBI).
+RUN dnf module enable -y nodejs:20 && \
     dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
         gcc gcc-c++ make \
@@ -39,6 +39,7 @@ RUN dnf module enable -y nodejs:22 && \
         procps-ng \
         git openssh-clients \
         findutils \
+        xz \
     && dnf clean all && rm -rf /var/cache/dnf
 
 # Playwright Chromium runtime dependencies (RHEL/UBI equivalents).
@@ -81,13 +82,14 @@ RUN curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ri
         | tar xz --strip-components=1 -C /usr/local/bin ripgrep-14.1.1-x86_64-unknown-linux-musl/rg && \
     chmod +x /usr/local/bin/rg
 
-# Install ffmpeg from a static build (not in UBI9 repos).
+# Install ffmpeg static build.
 # Used by voice/audio features (Discord voice, TTS Opus conversion, STT).
-RUN curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-        -o /tmp/ffmpeg.tar.xz && \
-    tar xJf /tmp/ffmpeg.tar.xz --strip-components=1 --wildcards -C /usr/local/bin '*/ffmpeg' '*/ffprobe' && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
-    rm -f /tmp/ffmpeg.tar.xz
+RUN curl -fsSL https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/ffmpeg-6.1-linux-64.zip \
+        -o /tmp/ffmpeg.zip && \
+    cd /tmp && unzip -o ffmpeg.zip -d /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ffmpeg && \
+    rm -f /tmp/ffmpeg.zip || \
+    echo "WARNING: ffmpeg download failed — voice features will be unavailable"
 
 # Copy uv/uvx from the official uv image.
 COPY --chmod=0755 --from=uv_source /uv /uvx /usr/local/bin/
@@ -115,18 +117,16 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # Force npm to install `file:` deps as symlinks (see original Dockerfile for rationale)
 ENV npm_config_install_links=false
 
-# Install npm deps: root-level, then Playwright, then sub-workspaces.
+# Install npm deps: root-level, then sub-workspaces, then clean cache.
 RUN npm install --prefer-offline --no-audit && \
+    (cd web && npm install --prefer-offline --no-audit) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
 # Install Playwright Chromium browser (without --with-deps since OS libs
 # were installed via dnf above).
-RUN npx playwright install chromium --only-shell
-
-# Install workspace npm deps (web + ui-tui).
-RUN (cd web && npm install --prefer-offline --no-audit) && \
-    (cd ui-tui && npm install --prefer-offline --no-audit) && \
-    npm cache clean --force
+RUN npx playwright install chromium || \
+    echo "WARNING: Playwright browser install failed — web research will be unavailable"
 
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep layer is cached
@@ -148,10 +148,10 @@ RUN cd web && npm run build && \
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
-# ---------- Permissions (OpenShift arbitrary UID support) ----------
-# Make the entrypoint script executable.
+# ---------- Make entrypoint executable ----------
 RUN chmod +x /opt/hermes/docker/entrypoint-openshift.sh
 
+# ---------- Permissions (OpenShift arbitrary UID support) ----------
 # Make install dir world-readable so any UID can read it at runtime.
 # node_modules trees need to be writable for runtime npm install checks.
 # Group 0 gets full access for OpenShift compatibility.
