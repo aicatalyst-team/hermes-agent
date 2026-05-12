@@ -5,13 +5,6 @@
 # Uses ubi9/python-312 as the base (provides Python 3.12 + dnf).
 # Node.js is installed via the ubi9 module stream.
 # Runs as UID 1001 with GID 0 for OpenShift arbitrary-UID support.
-#
-# Previous build failed with CRI-O log retrieval errors (infrastructure/
-# resource exhaustion).  This revision:
-#   - Splits heavy RUN layers to reduce peak disk usage during build
-#   - Skips Playwright/Chromium (very large, ~400 MB) to shrink image
-#     and reduce build-time resource pressure; can be re-enabled if needed
-#   - Cleans caches aggressively within each layer
 # --------------------------------------------------------------------------
 
 # ---- Source stage for uv binary ----
@@ -36,9 +29,8 @@ ENV OPENAI_API_KEY="" \
 # Switch to root for package installation
 USER 0
 
-# Enable Node.js 22 module stream and install system deps.
+# Enable Node.js 22 module stream and install system deps in one layer.
 # UBI9 python-312 images use dnf (full UBI, not ubi-minimal).
-# Split into two layers to reduce peak ephemeral storage usage during build.
 RUN dnf module enable -y nodejs:22 && \
     dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
@@ -47,12 +39,9 @@ RUN dnf module enable -y nodejs:22 && \
         procps-ng \
         git openssh-clients \
         findutils \
-        && \
-    dnf clean all && \
-    rm -rf /var/cache/dnf
+    && dnf clean all && rm -rf /var/cache/dnf
 
 # Playwright Chromium runtime dependencies (RHEL/UBI equivalents).
-# Installed separately to keep each layer smaller and reduce peak disk.
 RUN dnf install -y --setopt=install_weak_deps=False \
         nss \
         nspr \
@@ -78,9 +67,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         libXScrnSaver \
         xorg-x11-fonts-misc \
         xorg-x11-fonts-Type1 \
-        && \
-    dnf clean all && \
-    rm -rf /var/cache/dnf
+    && dnf clean all && rm -rf /var/cache/dnf
 
 # Install tini from GitHub release (not packaged in UBI9 repos).
 # tini reaps orphaned zombie processes (MCP stdio subprocesses, git, etc.)
@@ -116,6 +103,10 @@ WORKDIR /opt/hermes
 # ---------- Layer-cached Node.js dependency install ----------
 # Copy only package manifests first so npm install + Playwright are cached
 # unless the lockfiles themselves change.
+#
+# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
+# because it is referenced as a `file:` workspace dependency from
+# ui-tui/package.json.
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
 COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
@@ -124,14 +115,12 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # Force npm to install `file:` deps as symlinks (see original Dockerfile for rationale)
 ENV npm_config_install_links=false
 
-# Install npm deps.  Root-level npm install first, then Playwright, then
-# sub-workspaces.  Each step cleans up to limit peak disk usage.
+# Install npm deps: root-level, then Playwright, then sub-workspaces.
 RUN npm install --prefer-offline --no-audit && \
     npm cache clean --force
 
-# Install Playwright Chromium browser.
-# --with-deps is NOT used because it requires apt-get (Debian/Ubuntu).
-# All Chromium OS dependencies were installed via dnf above.
+# Install Playwright Chromium browser (without --with-deps since OS libs
+# were installed via dnf above).
 RUN npx playwright install chromium --only-shell
 
 # Install workspace npm deps (web + ui-tui).
@@ -150,7 +139,7 @@ RUN uv sync --frozen --no-install-project --extra all
 # .dockerignore excludes node_modules, so the installs above survive.
 COPY . .
 
-# Build browser dashboard and terminal UI assets
+# Build browser dashboard and terminal UI assets.
 RUN cd web && npm run build && \
     cd ../ui-tui && npm run build
 
@@ -160,7 +149,7 @@ RUN cd web && npm run build && \
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # ---------- Permissions (OpenShift arbitrary UID support) ----------
-# Ensure the entrypoint script is executable.
+# Make the entrypoint script executable.
 RUN chmod +x /opt/hermes/docker/entrypoint-openshift.sh
 
 # Make install dir world-readable so any UID can read it at runtime.
@@ -179,12 +168,11 @@ ENV HOME=/opt/data
 
 VOLUME [ "/opt/data" ]
 
-# Expose the API server default port (8642) and dashboard port (9119)
+# Expose the gateway API server (8642) and dashboard (9119) ports
 EXPOSE 8642
 EXPOSE 9119
 
 # Run as non-root user 1001 with group 0 for OpenShift
-RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
 RUN chgrp -R 0 /opt/app-root/src/node_modules && chmod -R g=u /opt/app-root/src/node_modules || true
 USER 1001
 
