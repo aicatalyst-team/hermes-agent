@@ -41,7 +41,6 @@ RUN dnf module enable -y nodejs:22 && \
         procps-ng \
         git openssh-clients \
         findutils \
-        strace \
         && \
     dnf clean all && \
     rm -rf /var/cache/dnf
@@ -66,8 +65,10 @@ RUN curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-st
         | tar xJ --strip-components=1 --wildcards -C /usr/local/bin '*/ffmpeg' '*/ffprobe' && \
     chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
-# Copy uv/uvx from the official uv image
-COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
+# Copy uv/uvx from the official uv image.
+# In recent astral-sh/uv images the binaries live at /uv and /uvx (not
+# /usr/local/bin/).
+COPY --chmod=0755 --from=uv_source /uv /uvx /usr/local/bin/
 
 # Create the working directories and data volume mount point.
 # /opt/data is the persistent state directory.
@@ -136,7 +137,7 @@ VOLUME [ "/opt/data" ]
 EXPOSE 8642
 EXPOSE 9119
 
-# Ensure /opt/app-root group permissions (may not exist in all images, hence || true)
+# Ensure /opt/app-root group permissions for OpenShift compatibility
 RUN chgrp -R 0 /opt/app-root && chmod -R g=u /opt/app-root || true
 
 # Run as non-root user 1001 with group 0 for OpenShift
