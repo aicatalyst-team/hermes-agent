@@ -3,7 +3,8 @@
 # --------------------------------------------------------------------------
 # Adapted from the upstream debian:13.4-based Dockerfile.
 # Uses ubi9/python-312 as the base (provides Python 3.12 + dnf).
-# Node.js 20 is installed via the ubi9 module stream.
+# Node.js 22 is pre-installed via the ubi9/python-312 module stream
+# (satisfies engines requirement of >=20.0.0).
 # Runs as UID 1001 with GID 0 for OpenShift arbitrary-UID support.
 # --------------------------------------------------------------------------
 
@@ -29,10 +30,9 @@ ENV OPENAI_API_KEY="" \
 # Switch to root for package installation
 USER 0
 
-# Enable Node.js 20 module stream (reliably available in UBI9, meets >=20.0.0).
-# Install system deps in one layer — UBI9 python-312 images use dnf (full UBI).
-RUN dnf module enable -y nodejs:20 && \
-    dnf install -y --setopt=install_weak_deps=False \
+# Node.js 22 is already enabled in the ubi9/python-312 base image —
+# no need to enable a module stream. Just install nodejs + npm + other deps.
+RUN dnf install -y --setopt=install_weak_deps=False \
         nodejs npm \
         gcc gcc-c++ make \
         libffi-devel python3-devel \
@@ -40,6 +40,7 @@ RUN dnf module enable -y nodejs:20 && \
         git openssh-clients \
         findutils \
         xz \
+        unzip \
     && dnf clean all && rm -rf /var/cache/dnf
 
 # Playwright Chromium runtime dependencies (RHEL/UBI equivalents).
@@ -168,7 +169,8 @@ ENV HOME=/opt/data
 
 VOLUME [ "/opt/data" ]
 
-# Expose the gateway API server (8642) and dashboard (9119) ports
+# Expose the gateway API server port and dashboard port
+EXPOSE 3000
 EXPOSE 8642
 EXPOSE 9119
 
