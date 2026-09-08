@@ -1,4 +1,10 @@
-<p align="center">
+> [!WARNING]
+> **This repository is archived.**
+>
+> Archived on 2026-09-08 by the AI Catalyst Platform Team.
+> It is read-only and no longer maintained.
+
+---<p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
